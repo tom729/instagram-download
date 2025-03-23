@@ -7,7 +7,7 @@
 - 每日自动访问多个Instagram用户的主页
 - 扫描并识别24小时内发布的新帖子
 - 下载帖子中的所有图片（支持多图帖子）
-- 保存帖子文案
+- 保存帖子文案[有bug，未实现]
 - 按用户名和日期分类存储数据
 
 ## 系统要求
@@ -21,7 +21,7 @@
 
 ```bash
 pip install playwright python-dateutil requests loguru
-playwright install chromium
+playwright install 
 ```
 
 2. 克隆或下载此仓库：
@@ -47,13 +47,10 @@ USERS_TO_MONITOR = [
 ]
 
 # 浏览器配置 - 选择一种方式
-# 1. 连接到已运行的Chrome (推荐)
-CHROME_USER_DATA_DIR = None  # 保持为None
+#  连接到已运行的Chrome (推荐)
+
 CHROME_REMOTE_DEBUGGING_PORT = 9222  # Chrome远程调试端口
 
-# 或者 2. 使用现有的Chrome用户数据目录
-# CHROME_USER_DATA_DIR = "/path/to/chrome/user/data/dir"  # 替换为实际路径
-# CHROME_PROFILE_NAME = "Default"  # Chrome配置文件名称
 ```
 
 ## 使用方法
@@ -105,9 +102,9 @@ crontab -e
 data/
 ├── [用户名1]/
 │   └── [日期]/
-│       ├── [帖子ID]_1_[时间戳].jpg
-│       ├── [帖子ID]_2_[时间戳].jpg  # 多图帖子的其他图片
-│       └── [帖子ID]_caption_[时间戳].txt  # 帖子文案
+│       ├── [user_id]_[帖子ID]_1_[时间].jpg
+│       ├── [user_id]_[帖子ID]_2_[时间].jpg  # 多图帖子的其他图片
+│       └── [user_id]_[帖子ID]_caption_[时间戳].txt   # 帖子文案[未实现]
 └── [用户名2]/
     └── [日期]/
         ├── ...
