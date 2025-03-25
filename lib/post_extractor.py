@@ -8,6 +8,65 @@
 import re
 from lib.date_utils import parse_instagram_timestamp, is_within_hours
 
+# 导入页面结构选择器配置
+try:
+    from config.page_selectors import INSTAGRAM_SELECTORS, POST_EXTRACTION_STRATEGY, TIMESTAMP_INDICATORS
+except ImportError:
+    # 如果配置文件不存在，使用默认选择器
+    INSTAGRAM_SELECTORS = {
+        "post_list_container": "div.xg7h5cd.x1n2onr6",
+        "post_row": "div._ac7v.xat24cr.x1f01sob.xcghwft.xzboxd6",
+        "post_item": "div.x1lliihq.x1n2onr6.xh8yej3.x4gyw5p.x11i5rnm.x1ntc13c.x9i3mqj.x2pgyrj",
+        "post_icon_container": "div.x9f619.xjbqb8w.x78zum5.x168nmei.x13lgxp2.x5pf9jr.xo71vjh.x1xmf6yo.x1emribx.x1e56ztr.x1i64zmx.x1n2onr6.x1plvlek.xryxfnj.x1c4vz4f.x2lah0s.xdt5ytf.xqjyukv.x1qjc9v5.x1oa3qoh.x1nhvcw1",
+        "pinned_post_icon": "svg[aria-label='置顶帖图标']",
+        "pinned_post_icon_alternatives": [
+            "svg[aria-label='置顶帖图标']",
+
+        
+        ],
+        "timestamp_selectors": [
+            "div[role='dialog'] time",
+            "div[role='dialog'] article time",
+            "article time"
+        ],
+        "post_dialog": "div[role='dialog']",
+        "post_link_selectors": [
+            "main > div > div:nth-child(2) a",
+            "section > main div > div > div > a",
+            "section > main div a[href^='/p/']",
+            "article a[href^='/p/']",
+            "a[href^='/p/']",
+            "div[role='presentation'] a[href^='/p/']"
+        ]
+    }
+    POST_EXTRACTION_STRATEGY = {
+        "max_posts_to_process": 5,
+        "pinned_post_detection_priority": [
+            "icon_matching",
+            "spatial_proximity",
+            "dom_traversal",
+            "first_post_fallback"
+        ]
+    }
+    TIMESTAMP_INDICATORS = {
+        "recent": [
+            '小时', 'hour', 'hr', 
+            '分钟', 'minute', 'min', 
+            '秒', 'second', 'sec', 
+            '刚刚', 'just now',
+            '今天', 'today'
+        ],
+        "old": [
+            '天', 'day', 'days',
+            '周', 'week', 'weeks', 'wk',
+            '月', 'month', 'months',
+            '年', 'year', 'years', 'yr'
+        ],
+        "special_cases": {
+            "yesterday": 48
+        }
+    }
+
 
 class PostExtractor:
     def __init__(self, browser_handler, config):
@@ -61,7 +120,7 @@ class PostExtractor:
         
         # 处理普通帖子，最多处理5个
         processed_count = 0
-        max_posts_to_process = 5
+        max_posts_to_process = POST_EXTRACTION_STRATEGY["max_posts_to_process"]
         
         for i, post_element in enumerate(post_elements):
             # 检查是否达到最大处理数量
@@ -96,17 +155,12 @@ class PostExtractor:
                 timestamp_text = post_data.get('timestamp_text', '')
                 
                 # 检查是否包含表示较长时间的关键词（天、周、月、年）
-                old_indicators = [
-                    '天', 'day', 'days',
-                    '周', 'week', 'weeks', 'wk',
-                    '月', 'month', 'months',
-                    '年', 'year', 'years', 'yr'
-                ]
+                old_indicators = TIMESTAMP_INDICATORS["old"]
                 
                 # 如果发现较早的时间标记，停止处理后续帖子
                 if any(indicator in timestamp_text.lower() for indicator in old_indicators):
                     # 特殊情况：如果是"昨天"(1天)且在阈值范围内，仍然处理该帖子
-                    if ('昨天' in timestamp_text or 'yesterday' in timestamp_text) and self.config.HOURS_THRESHOLD >= 48:
+                    if ('昨天' in timestamp_text or 'yesterday' in timestamp_text) and self.config.HOURS_THRESHOLD >= TIMESTAMP_INDICATORS["special_cases"]["yesterday"]:
                         if is_within_hours(post_data['timestamp'], self.config.HOURS_THRESHOLD, timestamp_text):
                             recent_posts.append(post_data)
                             timestamp_str = post_data['timestamp'].strftime('%Y-%m-%d %H:%M:%S')
@@ -152,50 +206,235 @@ class PostExtractor:
             list: 置顶帖子元素或标识符列表
         """
         try:
-            # 尝试查找置顶帖子标记
-            pinned_selectors = [
-                "svg[aria-label='置顶帖图标']",  # 新增：从图片中确认的具体标记
-                "svg[aria-label='已置顶']",
-                "svg[aria-label='Pinned']",
-                "div:has(> span:contains('置顶'))",
-                "div:has(> span:contains('Pinned'))",
-                "div[role='presentation'] div:contains('置顶')",
-                "div[role='presentation'] div:contains('Pinned')"
-            ]
+            # 使用从配置文件中获取的选择器
+            pinned_selectors = [INSTAGRAM_SELECTORS["pinned_post_icon"]] + INSTAGRAM_SELECTORS["pinned_post_icon_alternatives"]
             
-            pinned_posts = []
+            # 首先找到所有帖子块元素，供后续比对
+            all_post_elements = self._get_post_elements()
+            all_post_hrefs = []
+            
+            # 获取所有帖子的href值，用于后续匹配
+            for post_element in all_post_elements:
+                try:
+                    href = self.browser.page.evaluate("(el) => el.getAttribute('href')", post_element)
+                    if href:
+                        all_post_hrefs.append(href)
+                except Exception as e:
+                    print(f"获取帖子href时出错: {e}")
+                    continue
+            
+            print(f"找到 {len(all_post_hrefs)} 个帖子链接")
+            
+            # 使用配置的选择器查找置顶图标
+            pinned_icon_elements = []
             for selector in pinned_selectors:
                 try:
                     elements = self.browser.page.query_selector_all(selector)
                     if elements and len(elements) > 0:
-                        # 找到置顶标记，现在找到对应的帖子元素
-                        for pinned_mark in elements:
-                            # 寻找包含该标记的帖子容器
-                            post_container = self.browser.page.evaluate("""
-                                (element) => {
-                                    let current = element;
-                                    // 向上查找最近的a标签或帖子容器
-                                    while (current && 
-                                           (!current.tagName || current.tagName.toLowerCase() !== 'a' || 
-                                            !current.href || 
-                                            (!current.href.includes('/p/') && !current.href.includes('/reel/')))) {
-                                        current = current.parentElement;
-                                    }
-                                    return current ? current.href : null;
-                                }
-                            """, pinned_mark)
-                            
-                            if post_container:
-                                pinned_posts.append(post_container)
-                        
-                        if pinned_posts:
-                            print(f"使用选择器 '{selector}' 找到了 {len(pinned_posts)} 个置顶帖子")
-                            return pinned_posts
+                        pinned_icon_elements.extend(elements)
+                        print(f"使用选择器 '{selector}' 找到了 {len(elements)} 个置顶图标")
                 except Exception as e:
-                    print(f"查找置顶帖子时使用选择器 '{selector}' 出错: {e}")
-                    continue
+                    print(f"查找置顶帖子图标时使用选择器 '{selector}' 出错: {e}")
+            
+            print(f"共找到 {len(pinned_icon_elements)} 个置顶图标")
+            
+            # 初始化置顶帖子列表
+            pinned_posts = []
+            
+            # 尝试使用配置的策略查找置顶帖子
+            strategies = POST_EXTRACTION_STRATEGY["pinned_post_detection_priority"]
+            
+            # 策略1: 根据DOM结构直接定位帖子容器和置顶图标
+            if "icon_matching" in strategies:
+                print("尝试使用帖子列表结构直接定位置顶帖...")
+                try:
+                    # 使用单个evaluate调用来处理所有DOM操作
+                    js_find_pinned_posts = f"""
+                        () => {{
+                            const pinnedPosts = [];
+                            
+                            // 1. 找到帖子列表容器
+                            const container = document.querySelector('{INSTAGRAM_SELECTORS["post_list_container"]}');
+                            if (!container) {{
+                                console.log('Post list container not found');
+                                return pinnedPosts;
+                            }}
+                            
+                            // 2. 找到所有帖子行
+                            const rows = container.querySelectorAll('{INSTAGRAM_SELECTORS["post_row"]}');
+                            console.log(`Found ${rows.length} post rows`);
+                            
+                            // 3. 遍历每一行
+                            rows.forEach(row => {{
+                                // 4. 找到该行中的所有帖子
+                                const posts = row.querySelectorAll('{INSTAGRAM_SELECTORS["post_item"]}');
+                                console.log(`Found ${posts.length} posts in row`);
+                                
+                                // 5. 检查每个帖子
+                                posts.forEach(post => {{
+                                    // 6. 查找图标容器
+                                    const iconContainers = post.querySelectorAll('{INSTAGRAM_SELECTORS["post_icon_container"]}');
+                                    console.log(`Found ${iconContainers.length} icon containers in post`);
+                                    
+                                    // 7. 检查每个图标容器是否包含置顶图标
+                                    iconContainers.forEach(container => {{
+                                        const pinnedIcon = container.querySelector('{INSTAGRAM_SELECTORS["pinned_post_icon"]}');
+                                        if (pinnedIcon) {{
+                                            // 8. 找到包含该帖子的链接
+                                            const link = post.querySelector('a[href^="/p/"], a[href^="/reel/"]');
+                                            if (link) {{
+                                                const href = link.getAttribute('href');
+                                                if (href && !pinnedPosts.includes(href)) {{
+                                                    console.log('Found pinned post:', href);
+                                                    pinnedPosts.push(href);
+                                                }}
+                                            }}
+                                        }}
+                                    }});
+                                }});
+                            }});
+                            
+                            return pinnedPosts;
+                        }}
+                    """
                     
-            return []
+                    # 执行JavaScript代码
+                    pinned_posts = self.browser.page.evaluate(js_find_pinned_posts)
+                    
+                    if pinned_posts:
+                        print(f"找到 {len(pinned_posts)} 个置顶帖子")
+                        for post in pinned_posts:
+                            print(f"置顶帖子: {post}")
+                    else:
+                        print("未找到置顶帖子")
+                    
+                    return pinned_posts
+                    
+                except Exception as e:
+                    print(f"使用帖子列表结构定位置顶帖子时出错: {e}")
+                    import traceback
+                    print(traceback.format_exc())
+                    return []
+            
+            # 策略2: 使用空间位置关系
+            if "spatial_proximity" in strategies and not pinned_posts and pinned_icon_elements:
+                print("尝试使用空间位置关系匹配置顶帖...")
+                for icon in pinned_icon_elements:
+                    try:
+                        # 获取置顶图标在DOM中的位置信息，用于确定对应的帖子
+                        icon_rect = self.browser.page.evaluate("""
+                            (el) => {
+                                const rect = el.getBoundingClientRect();
+                                return {
+                                    top: rect.top,
+                                    left: rect.left,
+                                    bottom: rect.bottom,
+                                    right: rect.right
+                                };
+                            }
+                        """, icon)
+                        
+                        # 查找最近的帖子元素
+                        nearest_post_index = -1
+                        min_distance = float('inf')
+                        
+                        for i, post_element in enumerate(all_post_elements):
+                            post_rect = self.browser.page.evaluate("""
+                                (el) => {
+                                    const rect = el.getBoundingClientRect();
+                                    return {
+                                        top: rect.top,
+                                        left: rect.left,
+                                        bottom: rect.bottom,
+                                        right: rect.right
+                                    };
+                                }
+                            """, post_element)
+                            
+                            # 计算中心点距离
+                            icon_center_x = (icon_rect['left'] + icon_rect['right']) / 2
+                            icon_center_y = (icon_rect['top'] + icon_rect['bottom']) / 2
+                            post_center_x = (post_rect['left'] + post_rect['right']) / 2
+                            post_center_y = (post_rect['top'] + post_rect['bottom']) / 2
+                            
+                            distance = ((icon_center_x - post_center_x) ** 2 + 
+                                        (icon_center_y - post_center_y) ** 2) ** 0.5
+                            
+                            if distance < min_distance:
+                                min_distance = distance
+                                nearest_post_index = i
+                        
+                        # 如果找到最近的帖子，添加到列表
+                        if nearest_post_index >= 0:
+                            href = self.browser.page.evaluate(
+                                "(el) => el.getAttribute('href')",
+                                all_post_elements[nearest_post_index]
+                            )
+                            if href and href not in pinned_posts:
+                                pinned_posts.append(href)
+                                print(f"通过空间位置找到置顶帖子: {href}")
+                    except Exception as e:
+                        print(f"使用空间位置匹配置顶帖子时出错: {e}")
+            
+            # 策略3: 使用DOM遍历
+            if "dom_traversal" in strategies and not pinned_posts and pinned_icon_elements:
+                print("尝试使用DOM遍历查找置顶帖子...")
+                try:
+                    # 查找包含置顶图标的父级容器，然后找到其中的链接
+                    pinned_icon_selector = ", ".join([f"'{selector}'" for selector in pinned_selectors])
+                    script = f"""
+                        () => {{
+                            const pinnedIcons = Array.from(document.querySelectorAll({pinned_icon_selector}));
+                            const pinnedPosts = [];
+                            
+                            for (const icon of pinnedIcons) {{
+                                // 向上查找到最近的a标签
+                                let current = icon;
+                                let steps = 0;
+                                while (current && current.tagName !== 'A' && steps < 10) {{
+                                    current = current.parentElement;
+                                    steps++;
+                                }}
+                                
+                                if (current && current.tagName === 'A' && current.href) {{
+                                    let href = current.getAttribute('href');
+                                    if (href && (href.includes('/p/') || href.includes('/reel/'))) {{
+                                        pinnedPosts.push(href);
+                                    }}
+                                }}
+                            }}
+                            
+                            return pinnedPosts;
+                        }}
+                    """
+                    
+                    js_pinned_posts = self.browser.page.evaluate(script)
+                    if js_pinned_posts and len(js_pinned_posts) > 0:
+                        for pinned_href in js_pinned_posts:
+                            if pinned_href not in pinned_posts:
+                                pinned_posts.append(pinned_href)
+                                print(f"通过DOM遍历找到置顶帖子: {pinned_href}")
+                except Exception as e:
+                    print(f"使用DOM遍历查找置顶帖子时出错: {e}")
+            
+            # 策略4: 假设第一个帖子是置顶的
+            if "first_post_fallback" in strategies and not pinned_posts and len(all_post_elements) > 0:
+                try:
+                    print("使用默认策略：假设第一个帖子是置顶帖...")
+                    # 假设列表中的第一个帖子元素是置顶帖子
+                    first_post_href = self.browser.page.evaluate(
+                        "(el) => el.getAttribute('href')",
+                        all_post_elements[0]
+                    )
+                    if first_post_href:
+                        pinned_posts.append(first_post_href)
+                        print(f"假设第一个帖子为置顶帖子: {first_post_href}")
+                except Exception as e:
+                    print(f"获取第一个帖子href时出错: {e}")
+            
+            print(f"最终找到 {len(pinned_posts)} 个置顶帖子")
+            return pinned_posts
+                    
         except Exception as e:
             print(f"识别置顶帖子时出错: {e}")
             return []
@@ -258,20 +497,11 @@ class PostExtractor:
             list: 帖子元素列表
         """
         # Instagram帖子通常包含在特定的元素中
-        # 这些选择器可能需要根据Instagram界面变化进行调整
         try:
             print("尝试获取帖子元素...")
             
-            # 直接使用CSS选择器获取可点击的元素对象
-            # 尝试各种CSS选择器，从具体到宽泛
-            selectors = [
-                "main > div > div:nth-child(2) a",      # 根据提供的路径构建的选择器
-                "section > main div > div > div > a",   # 更精确的选择器
-                "section > main div a[href^='/p/']",    # 基于帖子链接格式的选择器
-                "article a[href^='/p/']",               # 更通用的选择器
-                "a[href^='/p/']",                       # 帖子链接通常以/p/开头
-                "div[role='presentation'] a[href^='/p/']" # 基于角色的选择器
-            ]
+            # 使用配置的选择器查找帖子元素
+            selectors = INSTAGRAM_SELECTORS["post_link_selectors"]
             
             # 尝试所有选择器
             for selector in selectors:

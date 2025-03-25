@@ -27,7 +27,7 @@ playwright install
 2. 克隆或下载此仓库：
 
 ```bash
-git clone <仓库URL>
+git clone https://github.com/tom729/instagram-download
 cd instagram_download
 ```
 

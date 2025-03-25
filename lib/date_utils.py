@@ -10,6 +10,30 @@ import datetime
 from dateutil import parser
 from dateutil.relativedelta import relativedelta
 
+# 导入时间戳指示器配置
+try:
+    from config.page_selectors import TIMESTAMP_INDICATORS
+except ImportError:
+    # 如果配置文件不存在，使用默认时间戳指示器
+    TIMESTAMP_INDICATORS = {
+        "recent": [
+            '小时', 'hour', 'hr', 
+            '分钟', 'minute', 'min', 
+            '秒', 'second', 'sec', 
+            '刚刚', 'just now',
+            '今天', 'today'
+        ],
+        "old": [
+            '天', 'day', 'days',
+            '周', 'week', 'weeks', 'wk',
+            '月', 'month', 'months',
+            '年', 'year', 'years', 'yr'
+        ],
+        "special_cases": {
+            "yesterday": 48
+        }
+    }
+
 
 def parse_instagram_timestamp(timestamp_text):
     """
@@ -113,29 +137,19 @@ def is_within_hours(timestamp, hours_threshold=24, timestamp_text=None):
     # 如果提供了显示文本，优先使用文本判断
     if timestamp_text:
         # 如果显示文本包含以下任何一个单词，认为是在24小时内
-        recent_indicators = [
-            '小时', 'hour', 'hr', 
-            '分钟', 'minute', 'min', 
-            '秒', 'second', 'sec', 
-            '刚刚', 'just now',
-            '今天', 'today'
-        ]
+        recent_indicators = TIMESTAMP_INDICATORS["recent"]
         
         # 检查是否包含任何一个指示最近的词
         if any(indicator in timestamp_text.lower() for indicator in recent_indicators):
             return True
         
         # 如果包含天、周、月、年等词，则认为超过时间范围
-        old_indicators = [
-            '天', 'day', 'days',
-            '周', 'week', 'weeks', 'wk',
-            '月', 'month', 'months',
-            '年', 'year', 'years', 'yr'
-        ]
+        old_indicators = TIMESTAMP_INDICATORS["old"]
         
-        # 特殊情况：如果是"昨天"并且hours_threshold > 24，仍可能在范围内
+        # 特殊情况：如果是"昨天"并且hours_threshold >= 配置的阈值
+        yesterday_threshold = TIMESTAMP_INDICATORS["special_cases"]["yesterday"]
         if ('昨天' in timestamp_text or 'yesterday' in timestamp_text):
-            return hours_threshold >= 48
+            return hours_threshold >= yesterday_threshold
             
         # 检查是否包含任何一个指示较早的词
         # 对于任何其他包含天/周/月/年的情况，直接返回False
